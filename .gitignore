@@ -4,3 +4,4 @@
 .idea/
 __pycache__/
 wwmi-tools/wwmi-tools_updater
+wwmi-tools/.vscode/settings.json

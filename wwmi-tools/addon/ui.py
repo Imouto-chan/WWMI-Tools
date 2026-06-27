@@ -18,6 +18,7 @@ from ..blender_import.blender_import import blender_import
 from ..blender_export.blender_export import blender_export
 from ..blender_export.ini_maker import IniMaker
 from ..extract_frame_data.extract_frame_data import extract_frame_data
+from ..mod_import.mod_importer import prepare_mod_for_import, fix_ini_textures, assign_mod_textures
 
 from .modules.toolbox.ui import *
 
@@ -89,11 +90,20 @@ class WWMI_TOOLS_PT_SIDEBAR(bpy.types.Panel):
         if cfg.tool_mode == 'EXPORT_MOD':
             self.draw_menu_export_mod(context)
 
+        elif cfg.tool_mode == 'EXTRACT_FRAME_DATA':
+            self.draw_menu_extract_frame_data(context)
+
         elif cfg.tool_mode == 'IMPORT_OBJECT':
             self.draw_menu_import_object(context)
 
-        elif cfg.tool_mode == 'EXTRACT_FRAME_DATA':
-            self.draw_menu_extract_frame_data(context)
+        elif cfg.tool_mode == 'MOD_IMPORT_PREP':
+            self.draw_menu_mod_import_prep(context)
+
+        elif cfg.tool_mode == 'IMPORT_MOD_OBJECT':
+            self.draw_menu_import_mod_object(context)
+
+        elif cfg.tool_mode == 'INI_TEX_FIX':
+            self.draw_menu_ini_tex_fix(context)
 
     def draw_menu_tools_mode(self, context):
         cfg = context.scene.wwmi_tools_settings
@@ -182,6 +192,34 @@ class WWMI_TOOLS_PT_SIDEBAR(bpy.types.Panel):
 
         layout.row().operator(WWMI_Import.bl_idname)
 
+    def draw_menu_import_mod_object(self, context):
+        cfg = context.scene.wwmi_tools_settings
+        layout = self.layout
+
+        layout.row()
+
+        row = add_row_with_error_handler(layout, cfg, 'object_source_folder')
+        row.prop(cfg, 'object_source_folder')
+
+        layout.row().prop(cfg, 'color_storage')
+        layout.row().prop(cfg, 'import_skeleton_type')
+        if cfg.import_skeleton_type == 'MERGED':
+            layout.row().prop(cfg, 'skip_empty_vertex_groups')
+        layout.row().prop(cfg, 'mirror_mesh')
+
+        layout.row().prop(cfg, 'auto_assign_textures')
+        if cfg.auto_assign_textures:
+            row = layout.row()
+            row.enabled = True
+            row.prop(cfg, 'diffuse_only_textures')
+            row2 = layout.row()
+            row2.enabled = True
+            row2.prop(cfg, 'texture_selection_mode')
+
+        layout.row()
+
+        layout.row().operator(WWMI_ImportModObject.bl_idname)
+
     def draw_menu_extract_frame_data(self, context):
         cfg = context.scene.wwmi_tools_settings
         layout = self.layout
@@ -209,6 +247,45 @@ class WWMI_TOOLS_PT_SIDEBAR(bpy.types.Panel):
         layout.row()
 
         layout.row().operator(WWMI_ExtractFrameData.bl_idname)
+
+    def draw_menu_mod_import_prep(self, context):
+        cfg = context.scene.wwmi_tools_settings
+        layout = self.layout
+
+        layout.row()
+        layout.label(text="Extract Object From Mod:", icon='IMPORT')
+
+        box = layout.box()
+        box.row().prop(cfg, 'mod_import_source_folder')
+        box.row().prop(cfg, 'mod_import_output_folder')
+        box.row()
+        box.row().operator(WWMI_PrepareModForImport.bl_idname)
+
+        if cfg.mod_import_status:
+            status_box = layout.box()
+            for line in cfg.mod_import_status.split('\n'):
+                if line.strip():
+                    status_box.label(text=line, icon='INFO')
+
+    def draw_menu_ini_tex_fix(self, context):
+        cfg = context.scene.wwmi_tools_settings
+        layout = self.layout
+
+        layout.row()
+        layout.label(text="Fix Exported mod.ini Textures:", icon='MATERIAL')
+
+        box = layout.box()
+        box.label(text="After exporting your mod:", icon='FILE_TICK')
+        box.row().prop(cfg, 'ini_fix_generated_folder')
+        box.row().prop(cfg, 'ini_fix_original_folder')
+        box.row()
+        box.row().operator(WWMI_FixIniTextures.bl_idname)
+
+        if cfg.ini_fix_status:
+            status_box = layout.box()
+            for line in cfg.ini_fix_status.split('\n'):
+                if line.strip():
+                    status_box.label(text=line, icon='INFO')
 
 
 class WWMI_TOOLS_PT_SidePanelPartialExport(bpy.types.Panel):
@@ -390,6 +467,49 @@ class WWMI_Import(bpy.types.Operator):
         except ConfigError as e:
             self.report({'ERROR'}, str(e))
         
+        return {'FINISHED'}
+
+
+class WWMI_ImportModObject(bpy.types.Operator):
+    """
+    Import a modded object (extracted via Extract Object From Mod) and
+    optionally auto-assign textures from texture_map.json.
+    """
+    bl_idname = "wwmi_tools.import_mod_object"
+    bl_label = "Import Modded Object"
+    bl_description = "Import mod components and auto-assign textures if texture_map.json is present"
+
+    bl_options = {'UNDO'}
+
+    def execute(self, context):
+        try:
+            cfg = context.scene.wwmi_tools_settings
+
+            clear_error(cfg)
+
+            cfg.mod_skeleton_type = cfg.import_skeleton_type
+
+            blender_import(self, context, cfg)
+
+            if cfg.auto_assign_textures:
+                from pathlib import Path
+                texture_map = Path(cfg.object_source_folder.strip()) / 'texture_map.json'
+                if texture_map.exists():
+                    from ..mod_import.mod_importer import assign_mod_textures
+                    result = assign_mod_textures(
+                        cfg.object_source_folder.strip(),
+                        collection_name=None,
+                        progress_cb=lambda msg: self.report({'INFO'}, msg),
+                        diffuse_only=cfg.diffuse_only_textures,
+                        texture_selection_mode=cfg.texture_selection_mode,
+                    )
+                    self.report({'INFO'}, result['message'])
+                else:
+                    self.report({'WARNING'}, "texture_map.json not found in source folder — textures skipped")
+
+        except ConfigError as e:
+            self.report({'ERROR'}, str(e))
+
         return {'FINISHED'}
 
 
@@ -651,3 +771,174 @@ class DebugPanel(bpy.types.Panel):
         layout.row().prop(cfg, 'allow_missing_shapekeys')
         layout.row().prop(cfg, 'remove_temp_object')
         layout.row().prop(cfg, 'export_on_reload')
+
+class WWMI_PrepareModForImport(bpy.types.Operator):
+    """
+    Prepare a packed mod folder for Import Object.
+    Splits components, remaps bone indices, builds Metadata.json.
+    """
+    bl_idname = "wwmi_tools.prepare_mod_for_import"
+    bl_label = "Extract Object From Mod"
+    bl_description = (
+        "Split a mod's Meshes/*.buf files into per-component .vb/.ib/.fmt files "
+        "ready for Import Object. Handles bone index remapping automatically."
+    )
+    bl_options = {'REGISTER'}
+
+    def execute(self, context):
+        cfg = context.scene.wwmi_tools_settings
+        cfg.mod_import_status = ''
+
+        mod_folder = cfg.mod_import_source_folder.strip()
+        out_folder = cfg.mod_import_output_folder.strip()
+
+        if not mod_folder:
+            self.report({'ERROR'}, "Mod Folder is required")
+            return {'CANCELLED'}
+        if not out_folder:
+            self.report({'ERROR'}, "Output Folder is required")
+            return {'CANCELLED'}
+
+        status_lines = []
+
+        def progress(msg):
+            status_lines.append(msg)
+
+        try:
+            result = prepare_mod_for_import(mod_folder, out_folder, progress_cb=progress)
+            comp_summary = "  ".join(
+                f"C{c['id']}({c['verts']}v/{c['tris']}t)" for c in result["components"]
+            )
+            cfg.mod_import_status = (
+                f"SUCCESS — {len(result['components'])} components\n"
+                f"{comp_summary}\n"
+                f"Output: {result['output_path']}"
+            )
+            self.report({'INFO'}, f"Mod prepared: {len(result['components'])} components written")
+        except Exception as e:
+            cfg.mod_import_status = f"ERROR: {e}"
+            self.report({'ERROR'}, str(e))
+            return {'CANCELLED'}
+
+        return {'FINISHED'}
+
+
+class WWMI_AssignModTextures(bpy.types.Operator):
+    """
+    Assign mod textures to the imported Component objects in the scene.
+    Reads texture_map.json from the prepared output folder, loads each
+    DDS (or other) texture as a Blender image, creates a material per
+    component, and assigns it.  Run this after Import Object.
+    """
+    bl_idname = "wwmi_tools.assign_mod_textures"
+    bl_label = "Assign Textures to Components"
+    bl_description = (
+        "Load mod textures and assign them as materials to the imported "
+        "Component objects. Run after 'Import Object'."
+    )
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        cfg = context.scene.wwmi_tools_settings
+        cfg.mod_texture_status = ''
+
+        out_folder = cfg.mod_import_output_folder.strip()
+        if not out_folder:
+            self.report({'ERROR'}, "Output Folder is required (set it in Step 1 above)")
+            return {'CANCELLED'}
+
+        from pathlib import Path
+        if not (Path(out_folder) / "texture_map.json").exists():
+            self.report({'ERROR'},
+                "texture_map.json not found. Run 'Extract Object From Mod' first.")
+            return {'CANCELLED'}
+
+        collection_name = cfg.mod_texture_collection.strip() or None
+
+        status_lines = []
+
+        def progress(msg):
+            status_lines.append(msg)
+
+        try:
+            result = assign_mod_textures(
+                out_folder,
+                collection_name=collection_name,
+                progress_cb=progress,
+                diffuse_only=cfg.diffuse_only_textures,
+                texture_selection_mode=cfg.texture_selection_mode,
+            )
+            cfg.mod_texture_status = (
+                f"SUCCESS — {result['assigned_components']} component(s), "
+                f"{result['assigned_textures']} texture(s) loaded"
+            )
+            if result['skipped_components']:
+                cfg.mod_texture_status += (
+                    f"\n{result['skipped_components']} component(s) had no scene object"
+                )
+            self.report({'INFO'}, result['message'])
+        except Exception as e:
+            cfg.mod_texture_status = f"ERROR: {e}"
+            self.report({'ERROR'}, str(e))
+            return {'CANCELLED'}
+
+        return {'FINISHED'}
+
+
+class WWMI_FixIniTextures(bpy.types.Operator):
+    """
+    Transplant texture overrides from an original mod.ini into a freshly
+    exported mod.ini, fixing texture hashes after export-from-vanilla.
+    """
+    bl_idname = "wwmi_tools.fix_ini_textures"
+    bl_label = "Fix INI Textures"
+    bl_description = (
+        "Replace the texture override section in the generated mod.ini with the "
+        "correct hashes from the original mod. Run this after Export Mod."
+    )
+    bl_options = {'REGISTER'}
+
+    def execute(self, context):
+        cfg = context.scene.wwmi_tools_settings
+        cfg.ini_fix_status = ''
+
+        gen_folder = cfg.ini_fix_generated_folder.strip()
+        orig_folder = cfg.ini_fix_original_folder.strip()
+
+        if not gen_folder:
+            self.report({'ERROR'}, "Generated Mod Folder is required")
+            return {'CANCELLED'}
+        if not orig_folder:
+            self.report({'ERROR'}, "Original Mod Folder is required")
+            return {'CANCELLED'}
+
+        from pathlib import Path
+        gen_ini = Path(gen_folder) / "mod.ini"
+        if not gen_ini.exists():
+            self.report({'ERROR'}, f"mod.ini not found in: {gen_folder}")
+            return {'CANCELLED'}
+
+        orig_ini = Path(orig_folder) / "mod.ini"
+        if not orig_ini.exists():
+            self.report({'ERROR'}, f"mod.ini not found in: {orig_folder}")
+            return {'CANCELLED'}
+
+        status_lines = []
+
+        def progress(msg):
+            status_lines.append(msg)
+
+        try:
+            result = fix_ini_textures(gen_ini, orig_folder, progress_cb=progress)
+            cfg.ini_fix_status = (
+                f"SUCCESS — {result['textures']} textures, "
+                f"{result['injured']} injured states, "
+                f"{result['copied']} files copied"
+            )
+            self.report({'INFO'}, result['message'])
+        except Exception as e:
+            cfg.ini_fix_status = f"ERROR: {e}"
+            self.report({'ERROR'}, str(e))
+            return {'CANCELLED'}
+
+        return {'FINISHED'}

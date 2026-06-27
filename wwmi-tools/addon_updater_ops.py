@@ -995,7 +995,7 @@ def update_settings_ui(self, context, element=None):
     elif updater.update_ready is None and not updater.async_checking:
         col.scale_y = 2
         col.operator(AddonUpdaterCheckNow.bl_idname)
-    elif updater.update_ready is None:  # async is running
+    elif updater.update_ready is None:  # Async is running.
         sub_col = col.row(align=True)
         sub_col.scale_y = 1
         split = sub_col.split(align=True)
@@ -1014,9 +1014,8 @@ def update_settings_ui(self, context, element=None):
         sub_col.scale_y = 1
         split = sub_col.split(align=True)
         split.scale_y = 2
-        update_now_txt = "Update directly to {}".format(
-            updater.include_branch_list[0])
-        split.operator(AddonUpdaterUpdateNow.bl_idname, text=update_now_txt)
+        now_txt = "Update directly to " + str(updater.include_branch_list[0])
+        split.operator(AddonUpdaterUpdateNow.bl_idname, text=now_txt)
         split = sub_col.split(align=True)
         split.scale_y = 2
         split.operator(AddonUpdaterCheckNow.bl_idname,
@@ -1337,10 +1336,9 @@ def register():
         return
     updater.clear_state()  # Clear internal vars, avoids reloading oddities.
     updater.engine = "Github"
-    updater.user = "SpectrumQT"
+    updater.user = "Imouto-chan"
     updater.repo = "WWMI-Tools"
-    # updater.addon = # define at top of module, MUST be done first
-    updater.website = "https://github.com/SpectrumQT/WWMI-Tools/releases"
+    updater.website = "https://github.com/Imouto-chan/WWMI-Tools/releases"
     updater.subfolder_path = "wwmi-tools"
     updater.current_version = bl_info["version"]
     updater.verbose = True  # make False for production default

@@ -47,8 +47,11 @@ class WWMI_Settings(bpy.types.PropertyGroup):
         description="Defines list of available actions",
         items=[
             ('EXPORT_MOD', 'Export Mod', 'Export selected collection as WWMI mod'),
-            ('IMPORT_OBJECT', 'Import Object', 'Import .ib ad .vb files from selected directory'),
             ('EXTRACT_FRAME_DATA', 'Extract Objects From Dump', 'Extract components of all WWMI-compatible objects from the selected frame dump directory'),
+            ('IMPORT_OBJECT', 'Import Object', 'Import .ib and .vb files from selected directory'),
+            ('MOD_IMPORT_PREP', 'Extract Object From Mod', 'Split a packed mod folder into per-component files ready for Import Object'),
+            ('IMPORT_MOD_OBJECT', 'Import Modded Object', 'Import a previously extracted mod object with texture assignment'),
+            ('INI_TEX_FIX', 'Fix INI Textures', 'Restore correct texture hashes in a freshly exported mod.ini from an original mod'),
             ('TOOLS_MODE', 'Toolbox', 'Bunch of useful object actions'),
         ],
         update=lambda self, context: clear_error(self),
@@ -109,7 +112,7 @@ class WWMI_Settings(bpy.types.PropertyGroup):
     ########################################
 
     object_source_folder: StringProperty(
-        name="Object Sources",
+        name="Object Source",
         description="Directory with components and textures of WWMI object",
         default='',
         subtype="DIR_PATH",
@@ -146,6 +149,38 @@ class WWMI_Settings(bpy.types.PropertyGroup):
         name="Mirror Mesh",
         description="Automatically mirror mesh to match actual in-game left-right. Transformation applies to the data itself and does not affect Scale X of Transform section in Object Properties",
         default=False,
+    ) # type: ignore
+
+    auto_assign_textures: BoolProperty(
+        name="Auto-Assign Textures",
+        description=(
+            "If texture_map.json exists in the Object Source folder (created by 'Extract Object From Mod'), "
+            "automatically load the mod textures and assign them as materials to each Component object "
+            "right after import. Useful for visualising the mod without extra steps"
+        ),
+        default=False,
+    ) # type: ignore
+
+    diffuse_only_textures: BoolProperty(
+        name="Base Color Only (Fast)",
+        description=(
+            "Only decode and load the single best diffuse/Base Color texture per component — "
+            "skips all normal maps, lightmaps, roughness, and other utility textures. "
+            "Much faster import (typically 5-10x) at the cost of a simplified material preview. "
+            "All texture nodes are still created; only the Base Color one has its image loaded"
+        ),
+        default=True,
+    ) # type: ignore
+
+    texture_selection_mode: bpy.props.EnumProperty(
+        name="Texture Selection Mode",
+        description="How to pick which texture node gets wired to Base Color",
+        items=[
+            ('AUTO',  'Auto (saturation)', 'Pick the most colourful non-excluded texture per component using pixel analysis'),
+            ('PST0',  'Always ps-t0',      'Wire the first shader slot texture (lowest override index) — reliable for most WuWa mods'),
+            ('NONE',  'None (manual)',      'Load all texture nodes but wire nothing — drag the connection yourself in the Shader Editor'),
+        ],
+        default='AUTO',
     ) # type: ignore
 
     ########################################
@@ -417,6 +452,70 @@ class WWMI_Settings(bpy.types.PropertyGroup):
         default='Collection must be filled!',
     ) # type: ignore
 
+    ########################################
+    # Mod Import Preparation
+    ########################################
+
+    mod_import_source_folder: StringProperty(
+        name="Mod Folder",
+        description="Root folder of the mod to import (must contain mod.ini and Meshes/)",
+        default='',
+        subtype="DIR_PATH",
+    ) # type: ignore
+
+    mod_import_output_folder: StringProperty(
+        name="Output Folder",
+        description="Where to write the flat Import-Object-compatible directory",
+        default='',
+        subtype="DIR_PATH",
+    ) # type: ignore
+
+    mod_import_status: StringProperty(
+        name="Status",
+        description="Status of last mod import preparation",
+        default='',
+    ) # type: ignore
+
+    mod_texture_collection: StringProperty(
+        name="Collection (optional)",
+        description=(
+            "Name of the Blender collection to search for Component objects. "
+            "Leave blank to search all scene objects. Normally this is the name "
+            "of the output folder used in Step 1 (e.g. 'Output 3')."
+        ),
+        default='',
+    ) # type: ignore
+
+    mod_texture_status: StringProperty(
+        name="Texture Status",
+        description="Status of last texture assignment",
+        default='',
+    ) # type: ignore
+
+    ########################################
+    # INI Texture Fix
+    ########################################
+
+    ini_fix_generated_folder: StringProperty(
+        name="Generated Mod Folder",
+        description="Folder containing the newly exported mod (with mod.ini to patch)",
+        default='',
+        subtype="DIR_PATH",
+    ) # type: ignore
+
+    ini_fix_original_folder: StringProperty(
+        name="Original Mod Folder",
+        description="Folder of the original mod whose texture hashes should be used",
+        default='',
+        subtype="DIR_PATH",
+    ) # type: ignore
+
+    ini_fix_status: StringProperty(
+        name="Status",
+        description="Status of last INI texture fix",
+        default='',
+    ) # type: ignore
+
 
 class Preferences(bpy.types.AddonPreferences):
     """Preferences updater"""
@@ -426,7 +525,7 @@ class Preferences(bpy.types.AddonPreferences):
     auto_check_update: BoolProperty(
         name="Auto-check for Update",
         description="If enabled, auto-check for updates using an interval",
-        default=True) # type: ignore
+        default=False) # type: ignore
 
     updater_interval_months: IntProperty(
         name='Months',

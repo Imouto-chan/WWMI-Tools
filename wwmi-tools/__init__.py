@@ -12,11 +12,11 @@ bl_info = {
     "version": (1, 7, 3),
     "wwmi_version": (1, 0, 0),
     "blender": (3, 6, 0),
-    "author": "SpectrumQT, LeoTorreZ, SinsOfSeven, SilentNightSound, DarkStarSword",
+    "author": "SpectrumQT, LeoTorreZ, SinsOfSeven, SilentNightSound, DarkStarSword, Imouto-chan",
     "location": "View3D > Sidebar > Tool Tab",
     "description": "Wuthering Waves modding toolkit",
     "category": "Object",
-    "tracker_url": "https://github.com/SpectrumQT/WWMI-Tools",
+    "tracker_url": "https://github.com/Imouto-chan/WWMI-Tools",
 }
 auto_load.init()
 
