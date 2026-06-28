@@ -263,14 +263,14 @@ endif
 hash = {{ extracted_object.shapekeys.offsets_hash }}
 match_priority = 0
 override_byte_stride = 24
-override_vertex_count = $mesh_vertex_count
+override_vertex_count = $shapekey_vertex_count
 
 {{note("Increases size of UAV that stores shapekeyed vertices multipliers to support more vertices than original")}}
 [TextureOverrideShapeKeyScale]
 hash = {{ extracted_object.shapekeys.scale_hash }}
 match_priority = 0
 override_byte_stride = 4
-override_vertex_count = $mesh_vertex_count
+override_vertex_count = $shapekey_vertex_count
 
 {{note("Updates ResourceShapeKeyCBRW that stores offsets of shapekeyed vertex lists, shape key values and multipliers")}}
 [CommandListSetupShapeKeysBatch]

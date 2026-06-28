@@ -1,5 +1,4 @@
 """
--
 shapekey_io.py - Utility to parse WuWa mod shapekey buffers and produce
 per-component .shapekeys files, plus the corresponding loader for use in
 blender_import.py.
@@ -33,7 +32,6 @@ def parse_shapekeys_from_mod(meshes_dir: Path):
         total_entries   int
         offsets         tuple of 128 uint32 (shapekey entry-start table)
         vids            tuple of uint32 (global vertex IDs, length total_entries)
--
         voffs           np.ndarray shape (total_entries, 6) float32
                         - first 3 cols are XYZ position offsets (float16 decoded)
     """
