@@ -164,7 +164,7 @@ class WWMI_Settings(bpy.types.PropertyGroup):
     diffuse_only_textures: BoolProperty(
         name="Base Color Only (Fast)",
         description=(
-            "Only decode and load the single best diffuse/Base Color texture per component — "
+            "Only decode and load the single best diffuse/Base Color texture per component - "
             "skips all normal maps, lightmaps, roughness, and other utility textures. "
             "Much faster import (typically 5-10x) at the cost of a simplified material preview. "
             "All texture nodes are still created; only the Base Color one has its image loaded"
@@ -177,8 +177,8 @@ class WWMI_Settings(bpy.types.PropertyGroup):
         description="How to pick which texture node gets wired to Base Color",
         items=[
             ('AUTO',  'Auto (saturation)', 'Pick the most colourful non-excluded texture per component using pixel analysis'),
-            ('PST0',  'Always ps-t0',      'Wire the first shader slot texture (lowest override index) — reliable for most WuWa mods'),
-            ('NONE',  'None (manual)',      'Load all texture nodes but wire nothing — drag the connection yourself in the Shader Editor'),
+            ('PST0',  'Always ps-t0',      'Wire the first shader slot texture (lowest override index) - reliable for most WuWa mods'),
+            ('NONE',  'None (manual)',      'Load all texture nodes but wire nothing - drag the connection yourself in the Shader Editor'),
         ],
         default='AUTO',
     ) # type: ignore

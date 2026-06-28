@@ -19,6 +19,8 @@ from ..migoto_io.blender_tools.vertex_groups import remove_unused_vertex_groups
 
 from ..extract_frame_data.metadata_format import read_metadata
 
+from ..mod_import.shapekey_io import read_shapekeys_file
+
 
 # TODO: Add support of import of unhandled semantics into vertex attributes
 class ObjectImporter:
@@ -107,6 +109,26 @@ class ObjectImporter:
             model.legacy_vertex_colors = cfg.color_storage == 'LEGACY'
 
             model.set_data(obj, mesh, index_buffer, vertex_buffer, vg_remap, mirror_mesh=cfg.mirror_mesh, mesh_scale=0.01, mesh_rotation=(0, 0, 180))
+
+            # --- Load per-component shapekeys if present ---
+            shapekeys_path = fmt_path.with_suffix('.shapekeys')
+            if shapekeys_path.is_file():
+                from ..migoto_io.data_model.data_importer import BlenderDataImporter
+                sk_data = read_shapekeys_file(shapekeys_path)
+                if sk_data:
+                    # Apply mesh_scale to position offsets (same factor used for positions)
+                    import numpy as _numpy
+                    scaled = {sk_id: arr * 0.01 for sk_id, arr in sk_data.items()}
+                    # Mirror / rotate if needed - mirror flips X, rotation is 180° around Z
+                    for sk_id, arr in scaled.items():
+                        if cfg.mirror_mesh:
+                            arr[:, 0] = -arr[:, 0]
+                        # 180° Z rotation: negate X and Y
+                        arr[:, 0] = -arr[:, 0]
+                        arr[:, 1] = -arr[:, 1]
+                        scaled[sk_id] = arr
+                    importer = BlenderDataImporter()
+                    importer.import_shapekeys(obj, scaled)
 
             num_shapekeys = 0 if obj.data.shape_keys is None else len(getattr(obj.data.shape_keys, 'key_blocks', []))
 

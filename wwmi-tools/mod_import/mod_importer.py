@@ -19,9 +19,15 @@ from pathlib import Path
 
 try:
     from . import dds_decoder
+    from .shapekey_io import (parse_shapekeys_from_mod,
+                               build_component_shapekeys,
+                               write_shapekeys_file)
 except ImportError:
     # Fallback for standalone/test execution outside the Blender addon package
     import dds_decoder
+    from shapekey_io import (parse_shapekeys_from_mod,
+                              build_component_shapekeys,
+                              write_shapekeys_file)
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +130,7 @@ def _remap_bones(components, blend_data, blend_stride=8):
         # Guard: fully-unweighted/rigid components have all blend weights = 0,
         # so global_bones_used is empty and ordered = [].  The WWMI importer
         # builds vg_remap from vg_map and then indexes every vertex's blend
-        # indices through it — even for zero-weight vertices it still does
+        # indices through it - even for zero-weight vertices it still does
         # vg_remap[blend_index_0].  An empty vg_remap causes IndexError.
         # Fix: always ensure at least local index 0 -> global bone 0 exists,
         # which gives the importer a valid mapping for the zero-weight case.
@@ -333,6 +339,15 @@ def prepare_mod_for_import(mod_folder, output_folder, progress_cb=None):
 
     log(f"Loaded: {total_verts} vertices, {num_indices} indices ({num_indices//3} triangles)")
 
+    # --- Load shapekey buffers (optional - mods without facial animation omit them) ---
+    sk_parsed = parse_shapekeys_from_mod(meshes_dir)
+    if sk_parsed:
+        sk_count, sk_entries, sk_offsets, sk_vids, sk_voffs = sk_parsed
+        log(f"Loaded shapekeys: {sk_count} keys, {sk_entries} vertex entries")
+    else:
+        sk_count = 0
+        log("No shapekey buffers found (ShapeKeyOffset.buf missing or empty)")
+
     # --- Parse mod.ini ---
     log("Parsing mod.ini component definitions...")
     components = _parse_ini_components(ini_path)
@@ -385,6 +400,20 @@ def prepare_mod_for_import(mod_folder, output_folder, progress_cb=None):
         # .fmt
         with open(output_folder / f"Component {cid}.fmt", "w") as f:
             f.write(fmt_content)
+
+        # .shapekeys (only if this component has shapekeys)
+        comp_sk_count = 0
+        if sk_count > 0:
+            sk_data = build_component_shapekeys(
+                sk_count, sk_offsets, sk_vids, sk_voffs, vmin, vmax)
+            if sk_data:
+                comp_sk_count = len(sk_data)
+                write_shapekeys_file(
+                    output_folder / f"Component {cid}.shapekeys",
+                    sk_data,
+                    num_verts,
+                )
+                log(f"    -> {comp_sk_count} shapekeys written")
 
         all_comp_meta.append({
             "vertex_offset": 0,
@@ -475,6 +504,27 @@ def prepare_mod_for_import(mod_folder, output_folder, progress_cb=None):
     # --- Parse and save texture map ---
     log("Parsing texture assignments from mod.ini...")
     tex_map = _parse_component_textures(ini_path, mod_folder)
+
+    # Inherit textures for components that have no texture entries.
+    # This happens when the mod author only names textures after the first
+    # component (e.g. "Components-0 t=xxxx.dds") even though multiple
+    # components share those textures.  We find the nearest component that
+    # DOES have textures and copy its entry list, so every imported component
+    # gets a material with the correct texture nodes.
+    all_comp_ids = sorted([c["id"] for c in components])
+    for cid in all_comp_ids:
+        key = str(cid)
+        if not tex_map.get(key):
+            # Find nearest component with textures (prefer lower IDs first)
+            donor_key = None
+            for other in sorted(tex_map.keys(), key=lambda k: abs(int(k) - cid)):
+                if tex_map[other]:
+                    donor_key = other
+                    break
+            if donor_key is not None:
+                tex_map[key] = tex_map[donor_key]
+                log(f"Component {key}: no textures in ini - inheriting from component {donor_key}")
+
     tex_map_path = output_folder / "texture_map.json"
     with open(tex_map_path, "w") as f:
         json.dump(tex_map, f, indent=2)
@@ -507,7 +557,7 @@ def _parse_component_textures(ini_path, mod_folder):
 
     res_id         = the [ResourceTextureN] index (authoring order).
     share_count    = how many components reference this texture (1 = exclusive).
-    override_index = the [TextureOverrideTextureN] index — this encodes the TRUE
+    override_index = the [TextureOverrideTextureN] index - this encodes the TRUE
                      ps-t slot ordering within the shader.  Textures are sorted
                      by their per-component override_index position so the
                      Blender node labels reflect the real shader binding order.
@@ -565,7 +615,7 @@ def _parse_component_textures(ini_path, mod_folder):
         name_part = stem.split(' t=')[0]   # "Components-0-2-3-6"
 
         if not name_part.startswith('Components-'):
-            continue  # FaceLightMap, Logo, etc. — truly global, skip
+            continue  # FaceLightMap, Logo, etc. - truly global, skip
 
         nums_str = name_part[len('Components-'):]   # "0-2-3-6"
         try:
@@ -614,7 +664,7 @@ def _parse_component_textures(ini_path, mod_folder):
 
 
 # ---------------------------------------------------------------------------
-# Blender material assignment  (requires bpy — only call from operator)
+# Blender material assignment  (requires bpy - only call from operator)
 # ---------------------------------------------------------------------------
 
 def assign_mod_textures(object_source_folder, collection_name=None, progress_cb=None, diffuse_only=False, texture_selection_mode='PST0'):
@@ -629,7 +679,7 @@ def assign_mod_textures(object_source_folder, collection_name=None, progress_cb=
                            searches all scene objects
     progress_cb          : optional callable(msg: str)
     diffuse_only         : if True, only decode+load the single best diffuse texture
-                           per component (fast mode — skips all utility maps).
+                           per component (fast mode - skips all utility maps).
                            All texture nodes are still created; only the Base Color
                            one has its image loaded.  Typically 5-10x faster.
 
@@ -689,7 +739,7 @@ def assign_mod_textures(object_source_folder, collection_name=None, progress_cb=
     assigned_textures   = 0
     skipped_components  = 0
 
-    # Create the _preview folder — PNGs converted from DDS go here.
+    # Create the _preview folder - PNGs converted from DDS go here.
     # IMPORTANT: always wipe and recreate it so stale PNGs from previous runs
     # (which may have been produced by older, buggy conversion code) never poison
     # the colour-scoring pass.  The folder is cheap to rebuild.
@@ -703,7 +753,7 @@ def assign_mod_textures(object_source_folder, collection_name=None, progress_cb=
     # Key: dds filename stem (e.g. "Components-0-2-3-6 t=a260e7f7")
     # Value: loaded bpy.data.images image (or None if decode failed)
     # Shared textures (e.g. Components-0-2-3-6) appear in multiple components
-    # and were previously decoded once per component — 6-8 redundant decodes
+    # and were previously decoded once per component - 6-8 redundant decodes
     # for a 2048×2048 BC7 texture is the main reason for 300+ second imports.
     # With this cache, each unique DDS is decoded exactly once across all components.
     png_cache = {}  # stem -> bpy.data.images image or None
@@ -712,7 +762,7 @@ def assign_mod_textures(object_source_folder, collection_name=None, progress_cb=
     # to this mod.  When _preview/ is wiped, the on-disk PNGs are gone, but
     # bpy.data.images still holds the old decoded pixel data under the same name.
     # The Priority-1 check (bpy.data.images.get(img_key) with size>0) then returns
-    # the stale image from a PREVIOUS run — which may be the wrong texture entirely
+    # the stale image from a PREVIOUS run - which may be the wrong texture entirely
     # (e.g. a purple spec map reused as a face diffuse).  Purging here forces a
     # fresh decode on every run, which is the only safe option.
     _all_tex_names = set()
@@ -805,7 +855,7 @@ def assign_mod_textures(object_source_folder, collection_name=None, progress_cb=
 
         # Layout: all texture nodes on the left, unwired, with clear slot labels.
         # A Principled BSDF + Output are placed to the right ready to connect.
-        # We deliberately do NOT auto-wire any texture to Base Color — WuWa uses
+        # We deliberately do NOT auto-wire any texture to Base Color - WuWa uses
         # many texture slots (diffuse, lightmap, normal, packed, …) and which slot
         # is the "diffuse" varies per component; guessing gets it wrong.  The modder
         # can see all textures in the node editor and connect them as needed.
@@ -821,7 +871,7 @@ def assign_mod_textures(object_source_folder, collection_name=None, progress_cb=
         # BC7/BC3. However, Blender's CPU-side loader (via OpenImageIO) CAN
         # decode these formats. The fix: load the DDS into Blender, immediately
         # save as PNG to a _preview/ subfolder, then use the PNG for the material.
-        # The PNG files are for viewport use only — they are not part of the mod.
+        # The PNG files are for viewport use only - they are not part of the mod.
 
         tex_x = -350
         loaded_nodes = []   # list of (slot_idx, entry, tex_node, is_bc45)
@@ -918,10 +968,10 @@ def assign_mod_textures(object_source_folder, collection_name=None, progress_cb=
                     _decode_paths.add(best_pst0[1])
 
             elif texture_selection_mode == 'NONE':
-                # No Base Color wiring needed — decode nothing in diffuse_only mode.
+                # No Base Color wiring needed - decode nothing in diffuse_only mode.
                 pass  # _decode_paths stays empty
 
-            else:  # 'AUTO' — need pixel data to compare, decode all share=1 textures
+            else:  # 'AUTO' - need pixel data to compare, decode all share=1 textures
                 for e in tex_entries:
                     tp = _resolve_tex_path(e)
                     if tp is None:
@@ -949,7 +999,7 @@ def assign_mod_textures(object_source_folder, collection_name=None, progress_cb=
 
             if _decode_paths is not None and tex_path not in _decode_paths:
                 # Create the node shell (labelled, correctly positioned) but
-                # don't load or decode the image — keeps the node editor informative
+                # don't load or decode the image - keeps the node editor informative
                 # while skipping the expensive decode step for utility textures.
                 tex_node          = nodes.new('ShaderNodeTexImage')
                 tex_node.image    = None
@@ -991,9 +1041,9 @@ def assign_mod_textures(object_source_folder, collection_name=None, progress_cb=
             best_entry = None
 
             if texture_selection_mode == 'NONE':
-                # Don't wire anything — user connects manually
+                # Don't wire anything - user connects manually
                 log(f"  Component {comp_id_str}: {len(loaded_nodes)} texture node(s) loaded "
-                    f"(Base Color: manual — drag the connection in Shader Editor)")
+                    f"(Base Color: manual - drag the connection in Shader Editor)")
 
             elif texture_selection_mode == 'PST0':
                 # Wire the texture with the lowest override_index.
@@ -1017,7 +1067,7 @@ def assign_mod_textures(object_source_folder, collection_name=None, progress_cb=
                     log(f"  Component {comp_id_str}: {len(loaded_nodes)} texture node(s) loaded "
                         f"(no image loaded successfully; Base Color not wired)")
 
-            else:  # 'AUTO' — pixel saturation heuristic
+            else:  # 'AUTO' - pixel saturation heuristic
                 def _pixel_stats(node):
                     """Return (mean_r, mean_g, mean_b, mean_sat) or None on failure."""
                     img = node.image
@@ -1049,21 +1099,21 @@ def assign_mod_textures(object_source_folder, collection_name=None, progress_cb=
                     Exclusion rules, validated against both the Dragon Lady mod
                     (where the diffuse has high saturation, e.g. a260e7f7 dragon-red)
                     and the Top mod (where the diffuse is muted blue/grey, e.g.
-                    768f8f35 sat=0.168, e6c846f5 sat=0.198 — LOWER saturation than
+                    768f8f35 sat=0.168, e6c846f5 sat=0.198 - LOWER saturation than
                     several of the wrong-winner packed maps).  Picking by "highest
                     saturation" alone fails on the Top mod, so the approach here is
                     exclusion-first: throw out anything that is structurally a
                     utility/packed/lightmap/normal map, then let only the diffuse
                     candidates compete on saturation as a tiebreaker.
 
-                      Rule 1 — B≈0            -> RG-packed map (tangent XY, flow, etc.)
-                      Rule 2 — one channel maxed
+                      Rule 1 - B≈0            -> RG-packed map (tangent XY, flow, etc.)
+                      Rule 2 - one channel maxed
                                and far above        -> single-channel/packed detail map
                                the next highest         (e.g. R=1.0, B=0.47, gap=0.53)
-                      Rule 3a — near-pure greyscale  -> lightmap / AO / packed mid-grey
-                      Rule 3b — slightly grey + bright-> specular / sheen map
-                      Rule 4 — very dark             -> shadow / occlusion map
-                      Rule 5 — blue-dominant, R≈G≈0.5 -> tangent-space normal map
+                      Rule 3a - near-pure greyscale  -> lightmap / AO / packed mid-grey
+                      Rule 3b - slightly grey + bright-> specular / sheen map
+                      Rule 4 - very dark             -> shadow / occlusion map
+                      Rule 5 - blue-dominant, R≈G≈0.5 -> tangent-space normal map
                     """
                     slot_idx, entry, node, is_bc45 = item
                     if is_bc45:
@@ -1084,7 +1134,9 @@ def assign_mod_textures(object_source_folder, collection_name=None, progress_cb=
                     if chs[2] > 0.92 and gap_top > 0.45:
                         return (1, 4, 0.0, 0)
                     # Rule 3a: near-pure greyscale (any brightness) -> lightmap/AO/packed
-                    if spread < 0.06:
+                    # Threshold lowered from 0.06 to 0.04 so muted fabric diffuses
+                    # (spread~0.057) are not excluded alongside true greyscale AO.
+                    if spread < 0.04:
                         return (1, 4, 0.0, 0)
                     # Rule 3b: slightly grey but bright -> specular/sheen map
                     if spread < 0.12 and brightness > 0.45:
@@ -1113,6 +1165,19 @@ def assign_mod_textures(object_source_folder, collection_name=None, progress_cb=
 
                 sorted_nodes = sorted(loaded_nodes, key=_auto_sort_key)
                 _, best_entry, best_node, _ = sorted_nodes[0]
+
+                # If ALL candidates were excluded, fall back to the largest texture
+                # by pixel area - diffuse maps are almost always highest resolution.
+                all_excluded = all(_auto_sort_key(item)[0] == 1 for item in loaded_nodes)
+                if all_excluded:
+                    def _area(item):
+                        img = item[2].image
+                        return (img.size[0] * img.size[1]) if (img and img.size[0] > 0) else 0
+                    by_area = sorted(loaded_nodes, key=_area, reverse=True)
+                    _, best_entry, best_node, _ = by_area[0]
+                    log(f"  Component {comp_id_str}: all textures excluded by heuristic; "
+                        f"falling back to largest by area.")
+
                 best_oi  = _override_idx(best_entry)
                 best_img = best_node.image
                 best_px  = f"{best_img.size[0]}x{best_img.size[1]}" if best_img else "?"

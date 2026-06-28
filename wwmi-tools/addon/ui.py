@@ -505,7 +505,7 @@ class WWMI_ImportModObject(bpy.types.Operator):
                     )
                     self.report({'INFO'}, result['message'])
                 else:
-                    self.report({'WARNING'}, "texture_map.json not found in source folder — textures skipped")
+                    self.report({'WARNING'}, "texture_map.json not found in source folder - textures skipped")
 
         except ConfigError as e:
             self.report({'ERROR'}, str(e))
@@ -810,7 +810,7 @@ class WWMI_PrepareModForImport(bpy.types.Operator):
                 f"C{c['id']}({c['verts']}v/{c['tris']}t)" for c in result["components"]
             )
             cfg.mod_import_status = (
-                f"SUCCESS — {len(result['components'])} components\n"
+                f"SUCCESS - {len(result['components'])} components\n"
                 f"{comp_summary}\n"
                 f"Output: {result['output_path']}"
             )
@@ -869,7 +869,7 @@ class WWMI_AssignModTextures(bpy.types.Operator):
                 texture_selection_mode=cfg.texture_selection_mode,
             )
             cfg.mod_texture_status = (
-                f"SUCCESS — {result['assigned_components']} component(s), "
+                f"SUCCESS - {result['assigned_components']} component(s), "
                 f"{result['assigned_textures']} texture(s) loaded"
             )
             if result['skipped_components']:
@@ -931,7 +931,7 @@ class WWMI_FixIniTextures(bpy.types.Operator):
         try:
             result = fix_ini_textures(gen_ini, orig_folder, progress_cb=progress)
             cfg.ini_fix_status = (
-                f"SUCCESS — {result['textures']} textures, "
+                f"SUCCESS - {result['textures']} textures, "
                 f"{result['injured']} injured states, "
                 f"{result['copied']} files copied"
             )

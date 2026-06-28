@@ -67,7 +67,7 @@ def patch_dx10_to_legacy(data: bytes) -> bytes:
 _DXGI_TO_FMT = {
     # BC1
     70: 'bc1', 71: 'bc1', 72: 'bc1',
-    # BC2 (rare; we decode as BC1 rgb + flat 0xFF alpha — good enough for preview)
+    # BC2 (rare; we decode as BC1 rgb + flat 0xFF alpha - good enough for preview)
     73: 'bc2', 74: 'bc2', 75: 'bc2',
     # BC3
     76: 'bc3', 77: 'bc3', 78: 'bc3',
