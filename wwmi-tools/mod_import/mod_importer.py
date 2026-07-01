@@ -286,19 +286,154 @@ element[9]:
 """
 
 
-def prepare_mod_for_import(mod_folder, output_folder, progress_cb=None):
+def harvest_vanilla_global_metadata(vanilla_dump_folder, vb0_hash, num_components, log=None):
+    """
+    Walk a vanilla frame-dump folder looking for a Metadata.json that matches
+    this character (by vb0_hash) and has the correct number of components.
+
+    Returns a dict with keys:
+        index_count         : int  — vanilla global index total (→ $object_guid)
+        cb4_hash            : str  — MarkBoneDataCB hash (→ TextureOverrideMarkBoneDataCB)
+        component_offsets   : list of dicts [{index_offset, vg_offset, vg_count}, ...]
+                              ordered by component position (0, 1, 2, …)
+
+    Returns None if no matching Metadata.json is found.
+    """
+    vanilla_dump_folder = Path(vanilla_dump_folder)
+    if not vanilla_dump_folder.is_dir():
+        if log:
+            log(f"Vanilla dump folder not found: {vanilla_dump_folder}")
+        return None
+
+    candidates = []
+    for meta_path in vanilla_dump_folder.rglob("Metadata.json"):
+        try:
+            with open(meta_path) as f:
+                meta = json.load(f)
+
+            # Match by vb0_hash — identifies the character
+            if str(meta.get("vb0_hash", "")).lower() != vb0_hash.lower():
+                continue
+
+            comps = meta.get("components", [])
+            if not comps:
+                continue
+
+            # Prefer dumps with matching component count
+            score = 1 if len(comps) == num_components else 0
+            candidates.append((score, meta_path, meta))
+        except Exception:
+            pass
+
+    if not candidates:
+        if log:
+            log(f"Vanilla dump: no Metadata.json found matching vb0_hash={vb0_hash}")
+        return None
+
+    # Best = highest score (matching component count), then first found
+    candidates.sort(key=lambda t: -t[0])
+    _, best_path, best_meta = candidates[0]
+
+    comps = best_meta.get("components", [])
+    component_offsets = [
+        {
+            "index_offset": c.get("index_offset", 0),
+            "index_count":  c.get("index_count", 0),   # vanilla draw call count → match_index_count
+            "vg_offset":    c.get("vg_offset", 0),
+            "vg_count":     c.get("vg_count", 0),
+        }
+        for c in comps
+    ]
+
+    cb4 = best_meta.get("cb4_hash")
+    if cb4 is None or str(cb4) in ("None", ""):
+        cb4 = None
+
+    result = {
+        "index_count":       best_meta.get("index_count", 0),
+        "cb4_hash":          cb4,
+        "component_offsets": component_offsets,
+    }
+
+    if log:
+        log(f"Vanilla global metadata harvested from {best_path.parent.name}/Metadata.json "
+            f"(object_guid={result['index_count']}, cb4_hash={result['cb4_hash']}, "
+            f"{len(component_offsets)} component(s))")
+
+    return result
+
+
+def harvest_vanilla_shapekey_metadata(vanilla_dump_folder, shapekey_vertex_count, log=None):
+    """
+    Walk a vanilla frame-dump folder looking for a Metadata.json whose
+    shapekeys.batches list is non-empty.  If found, return the full
+    shapekeys dict ready to embed in our output Metadata.json so the
+    exported mod.ini can correctly drive the shapekey compute shaders.
+
+    vanilla_dump_folder   : root path of a vanilla (unmodded) frame dump
+    shapekey_vertex_count : total number of shapekey vertex-entries we
+                            parsed from ShapeKeyOffset.buf; used to pick the
+                            best matching Metadata.json when several are found
+    log                   : optional callable(msg) for progress feedback
+
+    Returns the shapekeys dict from the matching Metadata.json, or None.
+    """
+    vanilla_dump_folder = Path(vanilla_dump_folder)
+    if not vanilla_dump_folder.is_dir():
+        if log:
+            log(f"Vanilla dump folder not found: {vanilla_dump_folder}")
+        return None
+
+    candidates = []
+    for meta_path in vanilla_dump_folder.rglob("Metadata.json"):
+        try:
+            with open(meta_path, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            sk = meta.get("shapekeys", {})
+            batches = sk.get("batches", [])
+            if not batches:
+                continue  # no batch data → useless for us
+            candidates.append((meta_path, sk, len(batches)))
+        except Exception:
+            continue
+
+    if not candidates:
+        if log:
+            log("Vanilla dump: no Metadata.json with shapekey batch data found")
+        return None
+
+    # Prefer a match whose vertex_count is closest to ours
+    best_path, best_sk, _ = min(
+        candidates,
+        key=lambda t: abs(t[1].get("vertex_count", 0) - shapekey_vertex_count)
+    )
+    if log:
+        log(f"Vanilla dump: using shapekey metadata from {best_path.parent.name}/Metadata.json "
+            f"({len(best_sk.get('batches', []))} batch(es))")
+    return best_sk
+
+
+def prepare_mod_for_import(mod_folder, output_folder, progress_cb=None,
+                           vanilla_dump_folder=None):
     """
     Main entry point.
 
-    mod_folder   : path to mod root (containing mod.ini and Meshes/)
-    output_folder: where to write the flat Import-Object directory
-    progress_cb  : optional callable(message: str) for UI feedback
+    mod_folder          : path to mod root (containing mod.ini and Meshes/)
+    output_folder       : where to write the flat Import-Object directory
+    progress_cb         : optional callable(message: str) for UI feedback
+    vanilla_dump_folder : optional path to a vanilla (unmodded) frame dump
+                          folder; if supplied, shapekey batch metadata
+                          (checksums, dispatch sizes) is harvested from the
+                          dump's Metadata.json so the exported mod.ini will
+                          drive shapekeys correctly in-game.
 
     Returns a dict with keys:
-      success      : bool
-      message      : summary string
-      components   : list of component summary dicts
-      output_path  : Path to output folder
+      success               : bool
+      message               : summary string
+      components            : list of component summary dicts
+      output_path           : Path to output folder
+      has_vanilla_shapekeys : bool — True if vanilla shapekey batch metadata
+                              was successfully harvested and embedded
     """
     mod_folder   = Path(mod_folder)
     output_folder = Path(output_folder)
@@ -418,7 +553,11 @@ def prepare_mod_for_import(mod_folder, output_folder, progress_cb=None):
         all_comp_meta.append({
             "vertex_offset": 0,
             "vertex_count":  num_verts,
-            "index_offset":  0,
+            # match_first is the component's position in the vanilla global IB —
+            # this is what the exporter writes as match_first_index in the ini,
+            # and what the template uses as the per-component index_offset.
+            # Using 0 here caused all components to match the same draw call.
+            "index_offset":  comp["match_first"],
             "index_count":   total_ib,
             "vg_offset":     comp["vg_offset"],
             "vg_count":      comp["actual_vg_count"],
@@ -436,23 +575,101 @@ def prepare_mod_for_import(mod_folder, output_folder, progress_cb=None):
 
     # --- Combined Metadata.json ---
     # Must exactly match the ExtractedObject dataclass schema in metadata_format.py
+
+    # Attempt to harvest shapekey batch metadata from a vanilla frame dump.
+    # This gives the exported mod.ini the checksums and dispatch sizes needed
+    # for the shapekey compute shaders to run correctly in-game.
+    has_vanilla_shapekeys = False
+    shapekeys_meta = {
+        "offsets_hash": "",
+        "scale_hash": "",
+        "vertex_ids_hash": "",
+        "vertex_offsets_hash": "",
+        "vertex_count": 0,
+        "shapekey_count": 0,
+        "batches": [],
+        "dispatch_y": 0,
+        "checksum": 0
+    }
+
+    # Vanilla global metadata: index_count ($object_guid), cb4_hash,
+    # and per-component index_offset / vg_offset / vg_count.
+    # All of these are only available from a vanilla frame dump's Metadata.json —
+    # the mod's own mod.ini has them as 0 when generated without a dump.
+    vanilla_global = None
+    if vanilla_dump_folder and str(vanilla_dump_folder).strip():
+        vanilla_global = harvest_vanilla_global_metadata(
+            vanilla_dump_folder, vb0_hash, len(components), log=log
+        )
+        if vanilla_global is not None:
+            # Patch per-component index_offset, vg_offset, vg_count from vanilla
+            voff_list = vanilla_global["component_offsets"]
+            for i, comp_meta in enumerate(all_comp_meta):
+                if i < len(voff_list):
+                    comp_meta["index_offset"] = voff_list[i]["index_offset"]
+                    comp_meta["index_count"]  = voff_list[i]["index_count"]   # vanilla draw call count
+                    # vg_offset AND vg_count must both come from vanilla.
+                    #
+                    # CORRECTION (previous version of this comment was wrong):
+                    # vg_count is not just a vg_map-sizing hint - ObjectMerger
+                    # (blender_export/object_merger.py, finalize_temp_objects_data)
+                    # computes total_vg_count = sum(component.vg_count for all
+                    # components) straight from this Metadata.json, then DELETES
+                    # every vertex group whose index >= total_vg_count before the
+                    # join/export. Blender vertex group index == global bone id
+                    # for this pipeline (see import_vertex_groups), so keeping our
+                    # own actual_vg_count (bones actually referenced by this mesh,
+                    # which is legitimately smaller than vanilla's reserved slot
+                    # size whenever the mod doesn't use every bone vanilla
+                    # reserves for that draw call) sets total_vg_count too low and
+                    # silently discards every vertex group - and its weights -
+                    # above that cutoff. It also feeds $\WWMIv1\vg_count in the
+                    # exported ini directly (merged.ini.j2), which the
+                    # SkeletonMerger compute shader uses to size its per-frame
+                    # bone refresh at runtime. Both consumers need vanilla's true
+                    # reserved count, not our actually-used count.
+                    comp_meta["vg_offset"] = voff_list[i]["vg_offset"]
+                    comp_meta["vg_count"]  = voff_list[i]["vg_count"]
+
+        # Shapekey batch metadata
+        sk_vertex_count = sk_parsed[1] if sk_parsed else 0
+        vanilla_sk = harvest_vanilla_shapekey_metadata(
+            vanilla_dump_folder, sk_vertex_count, log=log
+        )
+        if vanilla_sk is not None:
+            shapekeys_meta = vanilla_sk
+            has_vanilla_shapekeys = True
+            log(f"Shapekey batch metadata embedded from vanilla dump "
+                f"({len(vanilla_sk.get('batches', []))} batch(es))")
+    elif sk_parsed and sk_parsed[1] > 0:
+        log("NOTE: No vanilla dump provided. Shapekey positions will import "
+            "correctly but the exported mod.ini will be missing shapekey batch "
+            "metadata and correct match_first_index values — "
+            "provide a vanilla dump folder for a fully standalone mod.")
+    else:
+        log("NOTE: No vanilla dump provided. The extracted object will import "
+            "correctly in Blender but the exported mod.ini will not work in-game "
+            "without a vanilla dump as Object Source — "
+            "provide a vanilla dump folder for a fully standalone mod.")
+
+    # Resolve final values: prefer vanilla where available
+    final_index_count = (vanilla_global["index_count"]
+                         if vanilla_global and vanilla_global["index_count"]
+                         else num_indices)
+    final_cb4_hash    = (vanilla_global["cb4_hash"]
+                         if vanilla_global and vanilla_global["cb4_hash"]
+                         else None)
+
     meta = {
         "vb0_hash":    vb0_hash,
-        "cb4_hash":    None,
+        "cb4_hash":    final_cb4_hash,
         "vertex_count": total_verts,
-        "index_count":  num_indices,
+        # index_count → $object_guid: must be vanilla's total global index count.
+        # The mod's own num_indices is wrong here — it caused WWMI to
+        # mis-identify the character and overlay a ghost instead of replacing.
+        "index_count":  final_index_count,
         "components":   all_comp_meta,
-        "shapekeys": {
-            "offsets_hash": "",
-            "scale_hash": "",
-            "vertex_ids_hash": "",
-            "vertex_offsets_hash": "",
-            "vertex_count": 0,
-            "shapekey_count": 0,
-            "batches": [],
-            "dispatch_y": 0,
-            "checksum": 0
-        },
+        "shapekeys":    shapekeys_meta,
         "export_format": {
             "Index": {"semantics": [
                 {"name": "INDEX", "index": 0, "format": "R32_UINT", "stride": 12}
@@ -503,7 +720,22 @@ def prepare_mod_for_import(mod_folder, output_folder, progress_cb=None):
 
     # --- Parse and save texture map ---
     log("Parsing texture assignments from mod.ini...")
-    tex_map = _parse_component_textures(ini_path, mod_folder)
+    tex_map, texture_hashes = _parse_component_textures(ini_path, mod_folder)
+
+    # --- Save texture hash manifest (fname_hash -> correct runtime/game hash) ---
+    # The mod.ini we're recovering from is (usually) an already-working shipped mod,
+    # so its [TextureOverrideTextureN] hash= values ARE the correct runtime hashes
+    # 3DMigoto needs to match against. get_textures() in texture_collector.py already
+    # knows how to read this exact manifest format (written by "Extract Objects From
+    # Dump" for the vanilla-capture pathway) and falls back to it automatically during
+    # Export Mod - so no changes are needed anywhere else for this to take effect.
+    if texture_hashes:
+        tex_hashes_path = output_folder / "TextureHashes.json"
+        with open(tex_hashes_path, "w") as f:
+            json.dump(texture_hashes, f, indent=2)
+        log(f"Saved texture hash manifest: {len(texture_hashes)} entr"
+            f"{'y' if len(texture_hashes) == 1 else 'ies'} "
+            f"(enables correct texture overrides without a vanilla dump)")
 
     # Inherit textures for components that have no texture entries.
     # This happens when the mod author only names textures after the first
@@ -537,11 +769,13 @@ def prepare_mod_for_import(mod_folder, output_folder, progress_cb=None):
     log(msg)
 
     return {
-        "success":     True,
-        "message":     msg,
-        "components":  summaries,
-        "output_path": output_folder,
-        "texture_map": tex_map,
+        "success":              True,
+        "message":              msg,
+        "components":           summaries,
+        "output_path":          output_folder,
+        "texture_map":          tex_map,
+        "has_vanilla_shapekeys": has_vanilla_shapekeys,
+        "has_vanilla_global":    vanilla_global is not None,
     }
 
 
@@ -568,6 +802,15 @@ def _parse_component_textures(ini_path, mod_folder):
         Textures/Components-0 t=xxxx.dds         -> component 0 only (share_count=1)
         Textures/Components-0-2-3-6 t=xxxx.dds   -> 4 components    (share_count=4)
         Textures/FaceLightMap t=xxxx.dds          -> global, ignored
+
+    Also returns texture_hashes: a { fname_hash: game_hash } dict for every
+    resource whose override block was found. The mod.ini being parsed here is
+    an already-working shipped mod, so its override hash IS the correct
+    runtime-matching hash - this is the same value old_hash/override_hash
+    represents elsewhere in the addon, just sourced from a compiled mod
+    instead of a Frame Analysis dump. Callers should persist this as
+    TextureHashes.json in the output folder; get_textures() already reads
+    that file automatically.
     """
     mod_folder = Path(mod_folder)
     with open(ini_path, "r", encoding="utf-8-sig") as f:
@@ -610,6 +853,7 @@ def _parse_component_textures(ini_path, mod_folder):
     # Step 3: parse component membership from filename, build per-component lists
     #         keyed by (override_index) for correct slot ordering.
     comp_textures = {}   # str(comp_id) -> list of (override_index, res_id, share_count, path, is_replaced)
+    texture_hashes = {}  # fname_hash -> game_hash (the correct runtime-matching hash)
     for res_id, (abs_path, fname_hash) in resource_map.items():
         stem      = abs_path.stem          # "Components-0-2-3-6 t=a260e7f7"
         name_part = stem.split(' t=')[0]   # "Components-0-2-3-6"
@@ -632,6 +876,8 @@ def _parse_component_textures(ini_path, mod_folder):
             if oi_res_id == res_id:
                 override_index = oi
                 is_replaced    = (game_hash != fname_hash)
+                if fname_hash:
+                    texture_hashes[fname_hash] = game_hash
                 break
         if override_index is None:
             override_index = 9999 + res_id   # not in any override block; sort last
@@ -660,7 +906,9 @@ def _parse_component_textures(ini_path, mod_folder):
         if result[cid]:
             print(f"[TexParse]   Component {cid}: {len(result[cid])} texture(s)")
 
-    return result
+    print(f"[TexParse] {len(texture_hashes)} texture hash override(s) captured for manifest")
+
+    return result, texture_hashes
 
 
 # ---------------------------------------------------------------------------

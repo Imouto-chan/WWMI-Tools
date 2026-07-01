@@ -248,7 +248,7 @@ endif
 filename = Textures/{{ texture.filename }}
 
 [TextureOverrideTexture{{ loop.index0 }}]
-hash = {{ texture.hash }}
+hash = {{ texture.override_hash }}
 match_priority = 0
 if $object_detected
     this = ResourceTexture{{ loop.index0 }}

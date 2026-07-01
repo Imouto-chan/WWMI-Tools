@@ -257,7 +257,22 @@ class WWMI_TOOLS_PT_SIDEBAR(bpy.types.Panel):
 
         box = layout.box()
         box.row().prop(cfg, 'mod_import_source_folder')
+
+        # Vanilla dump row — red alert if empty
+        vanilla_row = box.row()
+        if not cfg.mod_import_vanilla_dump_folder.strip():
+            vanilla_row.alert = True
+        vanilla_row.prop(cfg, 'mod_import_vanilla_dump_folder')
+        if not cfg.mod_import_vanilla_dump_folder.strip():
+            warn_row = box.row()
+            warn_row.alert = True
+            warn_row.label(
+                text="Without a vanilla dump, the exported mod.ini will not work standalone in-game",
+                icon='ERROR',
+            )
+
         box.row().prop(cfg, 'mod_import_output_folder')
+
         box.row()
         box.row().operator(WWMI_PrepareModForImport.bl_idname)
 
@@ -265,7 +280,8 @@ class WWMI_TOOLS_PT_SIDEBAR(bpy.types.Panel):
             status_box = layout.box()
             for line in cfg.mod_import_status.split('\n'):
                 if line.strip():
-                    status_box.label(text=line, icon='INFO')
+                    icon = 'ERROR' if line.startswith('ERROR') else 'INFO'
+                    status_box.label(text=line, icon=icon)
 
     def draw_menu_ini_tex_fix(self, context):
         cfg = context.scene.wwmi_tools_settings
@@ -791,6 +807,7 @@ class WWMI_PrepareModForImport(bpy.types.Operator):
 
         mod_folder = cfg.mod_import_source_folder.strip()
         out_folder = cfg.mod_import_output_folder.strip()
+        vanilla_folder = cfg.mod_import_vanilla_dump_folder.strip() or None
 
         if not mod_folder:
             self.report({'ERROR'}, "Mod Folder is required")
@@ -805,13 +822,28 @@ class WWMI_PrepareModForImport(bpy.types.Operator):
             status_lines.append(msg)
 
         try:
-            result = prepare_mod_for_import(mod_folder, out_folder, progress_cb=progress)
+            result = prepare_mod_for_import(
+                mod_folder, out_folder,
+                progress_cb=progress,
+                vanilla_dump_folder=vanilla_folder,
+            )
             comp_summary = "  ".join(
                 f"C{c['id']}({c['verts']}v/{c['tris']}t)" for c in result["components"]
             )
+            has_sk = result.get("has_vanilla_shapekeys", False)
+            has_global = result.get("has_vanilla_global", False)
+            if has_global and has_sk:
+                vanilla_line = "Vanilla dump: object_guid + match offsets + shapekeys ✓"
+            elif has_global:
+                vanilla_line = "Vanilla dump: object_guid + match offsets ✓ (no shapekeys found)"
+            elif has_sk:
+                vanilla_line = "Vanilla dump: shapekeys ✓ (object_guid/offsets not found — re-check dump)"
+            else:
+                vanilla_line = "Vanilla dump: NOT provided — exported mod.ini will not work standalone"
             cfg.mod_import_status = (
                 f"SUCCESS - {len(result['components'])} components\n"
                 f"{comp_summary}\n"
+                f"{vanilla_line}\n"
                 f"Output: {result['output_path']}"
             )
             self.report({'INFO'}, f"Mod prepared: {len(result['components'])} components written")

@@ -470,6 +470,18 @@ class WWMI_Settings(bpy.types.PropertyGroup):
         subtype="DIR_PATH",
     ) # type: ignore
 
+    mod_import_vanilla_dump_folder: StringProperty(
+        name="Vanilla Dump Folder",
+        description=(
+            "Folder containing a vanilla (unmodded) frame dump of the same character. "
+            "Used to pull shapekey batch metadata (checksums, dispatch sizes) needed "
+            "for the exported mod.ini to work correctly in-game. "
+            "Without this, exported mods with shapekeys may not work standalone."
+        ),
+        default='',
+        subtype="DIR_PATH",
+    ) # type: ignore
+
     mod_import_status: StringProperty(
         name="Status",
         description="Status of last mod import preparation",

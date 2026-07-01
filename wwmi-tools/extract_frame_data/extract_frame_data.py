@@ -257,7 +257,13 @@ def write_objects(output_directory, objects: Dict[str, ObjectData], allow_missin
                 if texture.hash not in textures:
                     textures[texture.hash] = {
                         'path': texture.path,
-                        'components': []
+                        'components': [],
+                        # `texture.hash` is 3DMigoto's content-disambiguated dump id -- it's only used to
+                        # keep extracted files uniquely named on disk. When 3DMigoto reports a dump filename
+                        # in the `NEWHASH(OLDHASH)` form, `old_hash` is the hash the same resource presents
+                        # under the game's normal runtime hashing mode -- that's the one TextureOverride
+                        # sections actually need to match. Falls back to `hash` when only one was reported.
+                        'override_hash': texture.old_hash or texture.hash,
                     }
 
                 textures[texture.hash]['components'].append(str(component_id))
@@ -270,13 +276,18 @@ def write_objects(output_directory, objects: Dict[str, ObjectData], allow_missin
                 
             texture_usage[component_filename] = OrderedDict(sorted(texture_usage[component_filename].items()))
 
+        texture_hashes = {}
         for texture_hash, texture in textures.items():
             path = Path(texture['path'])
             components = '-'.join(sorted(list(set(texture['components']))))
             shutil.copyfile(path, object_directory / f'Components-{components} t={texture_hash}{path.suffix}')
+            texture_hashes[texture_hash] = texture['override_hash']
             
         with open(object_directory / f'TextureUsage.json', "w") as f:
             f.write(json.dumps(texture_usage, indent=4))
+
+        with open(object_directory / f'TextureHashes.json', "w") as f:
+            f.write(json.dumps(texture_hashes, indent=4))
 
         with open(object_directory / f'Metadata.json', "w") as f:
             f.write(object_data.metadata)
